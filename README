@@ -1,0 +1,129 @@
+KVFS
+====
+
+KVFS is a file storage system based on splitting a file into 1kB
+chunks using a depth-prefixed Merkle tree, and storing those chunks
+in any abstract key-value store.
+
+The file chunks are self-validating.  The key is based on a
+cryptographic digest of the data within each chunk, with a vanishingly
+small probability of a collision.
+
+A chunk may contain file data, or it may be an "indirection chunk"
+containing up to 32 keys for child chunks.  In the Merkle tree the
+chunks containing file data are leaf nodes, and "indirection chunks"
+are branch nodes.
+
+Storing a file that is more than one chunk long is therefore a
+recursive process:
+
+1. set the current depth to zero
+2. split the data into 1kB chunks
+3. store each chunk in the KVFS
+4. accumulate the keys into a new data set
+5. if there's more than one key, increment the depth and go back
+   to step 2 with that data
+
+This process will (eventually) result in a "root key", from which
+the whole tree (and thus the original file) can be reconstructed.
+
+Keys
+----
+
+The key for each chunk is a 256 bit modified SHA-256 digest of the
+chunk data, with the first 6 bits replaced with the current chunk
+depth and the next 10 bits representing the chunk length:
+
++---+---+---+---+---+---+---+---+---+---+---+---+---+---+---+---+
+| D | D | D | D | D | D | L | L | L | L | L | L | L | L | L | L |
++---+---+---+---+---+---+---+---+---+---+---+---+---+---+---+---+
+
+The total key length is 256 bits (32 octets).
+
+A chunk of length 1024 is represented with L == 0.  A chunk (and
+therefore file) of length 0 is impossible.
+
+The depth value is inverted - a value of zero is used for leaf-nodes,
+and the value increases by one for each step up the tree.
+
+If the key-value store does not support binary keys, the key may be
+encoded into a suitable format, e.g. hexadecimal or base64, so long
+as the resulting representation remains unique.
+
+Indirection Chunks
+------------------
+
+An indirection chunk MUST be a multiple of 32 octets long.
+
+An indirection chunk MUST NOT contain keys for any depth level other
+than the level immediately below it (i.e. one less than the current
+depth).
+
+In an indirection chunk, every key except for the last MUST be
+for a full (1024 octet) chunk.
+
+The above rules ensure a single canonical tree representation of a
+source file, and also ensure that the the tree structure cannot loop
+back on itself.
+
+[more rules needed?]
+
+Build Requirements
+==================
+
+Building the code requires the development packages for:
+
+- libmemcached (tested with 1.0.18)
+- ldns (tested with 1.6.17)
+
+The test code also requires UnitTest++ v1.4 or later
+
+KVFS API
+========
+
+Store API
+---------
+
+See <kvfs/kvfs.h>
+
+Access to a KVFS requires an instance of a "kvfs_store_t" object,
+typically created with a call to:
+
+    kvfs_store_t* kvfs_create_XXX(params...)
+
+where XXX represents the specific storage driver (e.g. "file", or
+"memcache") and the parameters are driver specific.
+
+Whole files may be stored using a stdio-style API with calls to:
+
+    FILE *kvfs_fopen_read(kvfs_store_t* store, uint8_t* key);
+    FILE *kvfs_fopen_write(kvfs_store_t* store);
+
+To obtain the key for the last key inserted into a store use:
+
+    const uint8_t* kvfs_last(kvfs_store_t* store);
+
+It is essential that the file handle returned by kvfs_fopen_write()
+is closed using fclose() since otherwise only the leaf-nodes will
+be stored, and the wrong key will be returned by kvfs_last().
+
+When a store is no longer needed it should be destroyed with a call
+to:
+
+    void     kvfs_free(kvfs_store_t* store);
+
+Low-level Store API
+-------------------
+
+Chunks may be stored and retrieved with the following calls:
+
+    int      kvfs_put(kvfs_store_t* store, chunk_t* chunk);
+    chunk_t* kvfs_get(kvfs_store_t* store, uint8_t *key);
+
+On error, kvfs_put() will return a negative value and kvfs_get() will
+return a NULL pointer.  Both functions will set 'errno' appropriately.
+
+Chunk API
+---------
+
+See <kvfs/chunk.h>
